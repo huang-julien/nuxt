@@ -37,7 +37,7 @@ export const TreeShakeTemplatePlugin = createUnplugin((options: TreeShakeTemplat
           .flatMap(c => [c.pascalName, c.kebabName.replaceAll('-', '_')])
           .concat(['ClientOnly', 'client_only'])
 
-        regexpMap.set(components, [new RegExp(`(${clientOnlyComponents.join('|')})`), new RegExp(`^(${clientOnlyComponents.map(c => `(?:(?:_unref\\()?(?:_component_)?(?:Lazy|lazy_)?${c}\\)?)`).join('|')})$`), clientOnlyComponents])
+        regexpMap.set(components, [new RegExp(`(${clientOnlyComponents.join('|')})`), new RegExp(`^((?:(?:_unref\\()?(?:_component_)?(?:Lazy|lazy_)?(${clientOnlyComponents.join('|')})\\)?))$`), clientOnlyComponents])
       }
 
       const s = new MagicString(code)
@@ -57,10 +57,13 @@ export const TreeShakeTemplatePlugin = createUnplugin((options: TreeShakeTemplat
             const [componentCall, _, children] = node.arguments
             if (componentCall.type === 'Identifier' || componentCall.type === 'MemberExpression' || componentCall.type === 'CallExpression') {
               const componentName = getComponentName(node)
+
               const isClientComponent = COMPONENTS_IDENTIFIERS_RE.test(componentName)
               const isClientOnlyComponent = /^(?:_unref\()?(?:_component_)?(?:Lazy|lazy_)?(?:client_only|ClientOnly\)?)$/.test(componentName)
-              if (isClientComponent && children?.type === 'ObjectExpression') {
-                const slotsToRemove = isClientOnlyComponent ? children.properties.filter(prop => prop.type === 'Property' && prop.key.type === 'Identifier' && !PLACEHOLDER_EXACT_RE.test(prop.key.name)) as AcornNode<Property>[] : children.properties as AcornNode<Property>[]
+
+              // treeshake <ClientOnly> slots
+              if (isClientOnlyComponent && children?.type === 'ObjectExpression') {
+                const slotsToRemove = children.properties.filter(prop => prop.type === 'Property' && prop.key.type === 'Identifier' && !PLACEHOLDER_EXACT_RE.test(prop.key.name)) as AcornNode<Property>[]
 
                 for (const slot of slotsToRemove) {
                   s.remove(slot.start, slot.end + 1)
@@ -89,6 +92,12 @@ export const TreeShakeTemplatePlugin = createUnplugin((options: TreeShakeTemplat
                       }
                     }
                   })
+                }
+                // treeshake .client component
+              } else if (isClientComponent) {
+                const shouldBeTreeshaked = (componentName.startsWith('_component_') || isImportedFromComponents(codeAst, componentName)) && isComponentNotCalledInSetup(codeAst, )
+                if () {
+                  componentsToRemoveSet.add(componentName)
                 }
               }
             }
@@ -132,6 +141,18 @@ export const TreeShakeTemplatePlugin = createUnplugin((options: TreeShakeTemplat
     }
   }
 })
+
+/**
+ * check if the name is imported from #components
+ */
+function isImportedFromComponents (ast: AcornNode<Program>, name: string): boolean {
+  for (const node of ast.body) {
+    if (node.type === 'ImportDeclaration' && node.source.value === '#components') {
+      return node.specifiers.some(specifier => specifier.type === 'ImportSpecifier' && specifier.imported.name === name)
+    }
+  }
+  return false
+}
 
 function isSSRRenderComponent (node: Node): node is AcornNode<CallExpression> {
   return node.type === 'CallExpression' && node.callee.type === 'Identifier' && SSR_RENDER_RE.test(node.callee.name)
