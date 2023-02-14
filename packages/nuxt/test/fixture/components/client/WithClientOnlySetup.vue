@@ -36,6 +36,8 @@
     <Dont />
     <That />
     <NotToBeTreeShaken />
+    <DotClientComponent />
+    <NotDotClientComponent />
   </div>
 </template>
 
@@ -47,6 +49,7 @@ import { Glob, ClientImport } from '#components'
 
 const hello = 'world'
 
+const NotDotClientComponent = defineAsyncComponent(() => import('./../some.island.vue'))
 const SomeIsland = defineAsyncComponent(async () => {
   if (process.client) {
     return (await import('./../some.island.vue'))

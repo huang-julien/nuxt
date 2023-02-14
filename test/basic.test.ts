@@ -252,6 +252,9 @@ describe('pages', () => {
     expect(html).toContain('<div class="lazy-client-only-script-setup" foo="hello">')
     // ensure components are not rendered server-side
     expect(html).not.toContain('client only script')
+
+    // ensure components declared in the setup to not be treeshaken
+    expect(html).toContain('Sugar Counter')
     await expectNoClientErrors('/client-only-explicit-import')
   })
 })
