@@ -9,12 +9,12 @@
 
 <script setup>
 import { defineAsyncComponent, onErrorCaptured, onServerPrefetch, provide } from 'vue'
-import { callWithNuxt, useNuxtApp } from '#app/nuxt'
+import { useNuxtApp } from '#app/nuxt'
 import { isNuxtError, showError, useError } from '#app/composables/error'
 import { useRoute } from '#app/composables/router'
 import AppComponent from '#build/app-component.mjs'
+import ErrorComponent from '#build/error-component.mjs'
 
-const ErrorComponent = defineAsyncComponent(() => import('#build/error-component.mjs').then(r => r.default || r))
 const IslandRenderer = process.server
   ? defineAsyncComponent(() => import('./island-renderer').then(r => r.default || r))
   : () => null
@@ -40,7 +40,7 @@ const error = useError()
 onErrorCaptured((err, target, info) => {
   nuxtApp.hooks.callHook('vue:error', err, target, info).catch(hookError => console.error('[nuxt] Error in `vue:error` hook', hookError))
   if (process.server || (isNuxtError(err) && (err.fatal || err.unhandled))) {
-    const p = callWithNuxt(nuxtApp, showError, [err])
+    const p = nuxtApp.runWithContext(() => showError(err))
     onServerPrefetch(() => p)
     return false // suppress error from breaking render
   }

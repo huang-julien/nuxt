@@ -1,17 +1,18 @@
 import { computed, isReadonly, reactive, shallowRef } from 'vue'
 import type { Ref } from 'vue'
-import type { RouteLocation, Router } from 'vue-router'
+import type { RouteLocation, Router, RouterScrollBehavior } from '#vue-router'
 import {
+  START_LOCATION,
   createMemoryHistory,
   createRouter,
   createWebHashHistory,
   createWebHistory
-} from 'vue-router'
+} from '#vue-router'
 import { createError } from 'h3'
 import { withoutBase } from 'ufo'
 
 import type { PageMeta, Plugin, RouteMiddleware } from '../../../app/index'
-import { callWithNuxt, defineNuxtPlugin, useRuntimeConfig } from '#app/nuxt'
+import { defineNuxtPlugin, useRuntimeConfig } from '#app/nuxt'
 import { clearError, showError, useError } from '#app/composables/error'
 import { useState } from '#app/composables/state'
 import { navigateTo } from '#app/composables/router'
@@ -26,7 +27,8 @@ import { globalMiddleware, namedMiddleware } from '#build/middleware'
 // https://github.com/vuejs/router/blob/4a0cc8b9c1e642cdf47cc007fa5bbebde70afc66/packages/router/src/history/html5.ts#L37
 function createCurrentLocation (
   base: string,
-  location: Location
+  location: Location,
+  renderedPath?: string
 ): string {
   const { pathname, search, hash } = location
   // allows hash bases like #, /#, #/, #!, #!/, /#!/, or even /folder#end
@@ -40,11 +42,11 @@ function createCurrentLocation (
     if (pathFromHash[0] !== '/') { pathFromHash = '/' + pathFromHash }
     return withoutBase(pathFromHash, '')
   }
-  const path = withoutBase(pathname, base)
-  return path + search + hash
+  const path = renderedPath || withoutBase(pathname, base)
+  return path + (path.includes('?') ? '' : search) + hash
 }
 
-export default defineNuxtPlugin({
+const plugin: Plugin<{ router: Router }> = defineNuxtPlugin({
   name: 'nuxt:router',
   enforce: 'pre',
   async setup (nuxtApp) {
@@ -61,9 +63,22 @@ export default defineNuxtPlugin({
 
     const routes = routerOptions.routes?.(_routes) ?? _routes
 
-    const initialURL = process.server ? nuxtApp.ssrContext!.url : createCurrentLocation(routerBase, window.location)
+    let startPosition: Parameters<RouterScrollBehavior>[2] | null
+    const initialURL = process.server
+      ? nuxtApp.ssrContext!.url
+      : createCurrentLocation(routerBase, window.location, nuxtApp.payload.path)
+
     const router = createRouter({
       ...routerOptions,
+      scrollBehavior: (to, from, savedPosition) => {
+        if (from === START_LOCATION) {
+          startPosition = savedPosition
+          return
+        }
+        // reset scroll behavior to initial value
+        router.options.scrollBehavior = routerOptions.scrollBehavior
+        return routerOptions.scrollBehavior?.(to, START_LOCATION, startPosition || savedPosition)
+      },
       history,
       routes
     })
@@ -113,7 +128,7 @@ export default defineNuxtPlugin({
       await router.isReady()
     } catch (error: any) {
       // We'll catch 404s here
-      await callWithNuxt(nuxtApp, showError, [error])
+      await nuxtApp.runWithContext(() => showError(error))
     }
 
     const initialLayout = useState('_layout')
@@ -124,42 +139,44 @@ export default defineNuxtPlugin({
       }
       nuxtApp._processingMiddleware = true
 
-      type MiddlewareDef = string | RouteMiddleware
-      const middlewareEntries = new Set<MiddlewareDef>([...globalMiddleware, ...nuxtApp._middleware.global])
-      for (const component of to.matched) {
-        const componentMiddleware = component.meta.middleware as MiddlewareDef | MiddlewareDef[]
-        if (!componentMiddleware) { continue }
-        if (Array.isArray(componentMiddleware)) {
-          for (const entry of componentMiddleware) {
-            middlewareEntries.add(entry)
-          }
-        } else {
-          middlewareEntries.add(componentMiddleware)
-        }
-      }
-
-      for (const entry of middlewareEntries) {
-        const middleware = typeof entry === 'string' ? nuxtApp._middleware.named[entry] || await namedMiddleware[entry]?.().then((r: any) => r.default || r) : entry
-
-        if (!middleware) {
-          if (process.dev) {
-            throw new Error(`Unknown route middleware: '${entry}'. Valid middleware: ${Object.keys(namedMiddleware).map(mw => `'${mw}'`).join(', ')}.`)
-          }
-          throw new Error(`Unknown route middleware: '${entry}'.`)
-        }
-
-        const result = await callWithNuxt(nuxtApp, middleware, [to, from])
-        if (process.server || (!nuxtApp.payload.serverRendered && nuxtApp.isHydrating)) {
-          if (result === false || result instanceof Error) {
-            const error = result || createError({
-              statusCode: 404,
-              statusMessage: `Page Not Found: ${initialURL}`
-            })
-            await callWithNuxt(nuxtApp, showError, [error])
-            return false
+      if (process.client || !nuxtApp.ssrContext?.islandContext) {
+        type MiddlewareDef = string | RouteMiddleware
+        const middlewareEntries = new Set<MiddlewareDef>([...globalMiddleware, ...nuxtApp._middleware.global])
+        for (const component of to.matched) {
+          const componentMiddleware = component.meta.middleware as MiddlewareDef | MiddlewareDef[]
+          if (!componentMiddleware) { continue }
+          if (Array.isArray(componentMiddleware)) {
+            for (const entry of componentMiddleware) {
+              middlewareEntries.add(entry)
+            }
+          } else {
+            middlewareEntries.add(componentMiddleware)
           }
         }
-        if (result || result === false) { return result }
+
+        for (const entry of middlewareEntries) {
+          const middleware = typeof entry === 'string' ? nuxtApp._middleware.named[entry] || await namedMiddleware[entry]?.().then((r: any) => r.default || r) : entry
+
+          if (!middleware) {
+            if (process.dev) {
+              throw new Error(`Unknown route middleware: '${entry}'. Valid middleware: ${Object.keys(namedMiddleware).map(mw => `'${mw}'`).join(', ')}.`)
+            }
+            throw new Error(`Unknown route middleware: '${entry}'.`)
+          }
+
+          const result = await nuxtApp.runWithContext(() => middleware(to, from))
+          if (process.server || (!nuxtApp.payload.serverRendered && nuxtApp.isHydrating)) {
+            if (result === false || result instanceof Error) {
+              const error = result || createError({
+                statusCode: 404,
+                statusMessage: `Page Not Found: ${initialURL}`
+              })
+              await nuxtApp.runWithContext(() => showError(error))
+              return false
+            }
+          }
+          if (result || result === false) { return result }
+        }
       }
     })
 
@@ -170,19 +187,19 @@ export default defineNuxtPlugin({
 
       if (process.client && !nuxtApp.isHydrating && error.value) {
         // Clear any existing errors
-        await callWithNuxt(nuxtApp, clearError)
+        await nuxtApp.runWithContext(clearError)
       }
       if (process.server && failure?.type === 4 /* ErrorTypes.NAVIGATION_ABORTED */) {
         return
       }
-      if (to.matched.length === 0) {
-        await callWithNuxt(nuxtApp, showError, [createError({
+      if (to.matched.length === 0 && (!process.server || !nuxtApp.ssrContext?.islandContext)) {
+        await nuxtApp.runWithContext(() => showError(createError({
           statusCode: 404,
           fatal: false,
           statusMessage: `Page not found: ${to.fullPath}`
-        })])
+        })))
       } else if (process.server && to.redirectedFrom) {
-        await callWithNuxt(nuxtApp, navigateTo, [to.fullPath || '/'])
+        await nuxtApp.runWithContext(() => navigateTo(to.fullPath || '/'))
       }
     })
 
@@ -190,15 +207,19 @@ export default defineNuxtPlugin({
       try {
         await router.replace({
           ...router.resolve(initialURL),
-          name: undefined, // #4920, #$4982
+          name: undefined, // #4920, #4982
           force: true
         })
+        // reset scroll behavior to initial value
+        router.options.scrollBehavior = routerOptions.scrollBehavior
       } catch (error: any) {
         // We'll catch middleware errors or deliberate exceptions here
-        await callWithNuxt(nuxtApp, showError, [error])
+        await nuxtApp.runWithContext(() => showError(error))
       }
     })
 
     return { provide: { router } }
   }
-}) as Plugin<{ router: Router }>
+})
+
+export default plugin
