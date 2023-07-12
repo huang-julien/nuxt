@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { relative, resolve } from 'pathe'
 import { addPluginTemplate, addTemplate, addVitePlugin, addWebpackPlugin, defineNuxtModule, resolveAlias, updateTemplates } from '@nuxt/kit'
 import type { Component, ComponentsDir, ComponentsOptions } from 'nuxt/schema'
@@ -9,7 +9,7 @@ import { componentNamesTemplate, componentsIslandsTemplate, componentsPluginTemp
 import { scanComponents } from './scan'
 import { loaderPlugin } from './loader'
 import { TreeShakeTemplatePlugin } from './tree-shake'
-import { islandsTransform } from './islandsTransform'
+import { islandsTransform, serverComponentAssetEmitter, serverComponentTransform } from './islandsTransform'
 import { createTransformPlugin } from './transform'
 
 const isPureObjectOrString = (val: any) => (!Array.isArray(val) && typeof val === 'object') || typeof val === 'string'
@@ -200,6 +200,7 @@ export default defineNuxtModule<ComponentsOptions>({
       }
     })
 
+    const serverTreeChunk = new Set<string>()
     nuxt.hook('vite:extendConfig', (config, { isClient, isServer }) => {
       const mode = isClient ? 'client' : 'server'
 
@@ -222,9 +223,16 @@ export default defineNuxtModule<ComponentsOptions>({
         experimentalComponentIslands: nuxt.options.experimental.componentIslands
       }))
 
-      config.plugins.push(islandsTransform.vite({
-        getComponents
-      }))
+      if (isServer) {
+        config.plugins.push(islandsTransform.vite({
+          getComponents
+        }))
+
+        config.plugins.push(serverComponentTransform.vite({
+          getComponents,
+          chunks: serverTreeChunk
+        }))
+      }
     })
     nuxt.hook('webpack:config', (configs) => {
       configs.forEach((config) => {

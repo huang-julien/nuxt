@@ -39,6 +39,7 @@ export default defineNuxtConfig({
   extends: [
     './extends/node_modules/foo'
   ],
+  
   nitro: {
     esbuild: {
       options: {
