@@ -8,9 +8,9 @@ import { COMMENT_NODE, ELEMENT_NODE, parse, walk } from 'ultrahtml'
 import { basename, extname } from 'pathe'
 import { pascalCase } from 'scule'
 
-import { walk as estreeWalk } from 'estree-walker'
+import { walk as estreeWalk,  } from 'estree-walker'
 import type Acorn from 'acorn'
-import type { ArrowFunctionExpression, CallExpression, Node as EstreeNode, Expression, FunctionDeclaration, Identifier, MemberExpression, Program, Property, SimpleCallExpression, TemplateElement, TemplateLiteral } from 'estree'
+import type { ArrowFunctionExpression, CallExpression, Node as EstreeNode, Expression, FunctionDeclaration, Identifier, MemberExpression, Node, Program, Property, SimpleCallExpression, TemplateElement, TemplateLiteral } from 'estree'
 import { isVue } from '../core/utils'
 import { isFunctionCallExpression } from './utils'
 interface ServerOnlyComponentTransformPluginOptions {
@@ -42,7 +42,7 @@ type SLOT_DESCRIPTOR = {
   children: NODE_DESCRIPTOR[]
 
   // eslint-disable-next-line no-use-before-define
-  parentDescriptor: ELEMENT_DESCRIPTOR | TEMPLATE_DESCRIPTOR | SLOT_DESCRIPTOR
+  parentDescriptor: COMPONENT_DESCRIPTOR
 }
 
 type TEMPLATE_DESCRIPTOR = {
@@ -331,7 +331,32 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
           }
 
           function componentChildrenToTree (slotName: string, fnAst: ArrowFunctionExpression | FunctionDeclaration) {
-            // todo 
+            if (currentNode.type !== NODE_TYPE.COMPONENT) {
+              throw new Error('Somehting went wrong when converting a component into a tree')
+            }
+
+            const slotDescriptor: SLOT_DESCRIPTOR = {
+              type: NODE_TYPE.SLOT,
+              children: [],
+              name: slotName,
+              parentDescriptor: currentNode
+            }
+
+            currentNode.children.push(slotDescriptor)
+
+            currentNode = slotDescriptor
+
+            estreeWalk(fnAst.body, {
+              enter: (_node) => {
+                const node = _node as unknown as AcornNode<Node>
+                // we only analyze sfc render function from vue compiler which prepends a _
+                if (isFunctionCallExpression(node, '_push')) {
+                  pushFunctionToTree(node as SimpleCallExpression)
+                }
+              }
+            })
+
+            currentNode = slotDescriptor.parentDescriptor
           }
 
           /**
@@ -350,9 +375,9 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
             }
           }
 
-          await estreeWalk(ast, {
+          estreeWalk(ast, {
             enter: (_node) => {
-              const node = _node as unknown as AcornNode<HtmlNode>
+              const node = _node as unknown as AcornNode<Node>
               // we only analyze sfc render function from vue compiler which prepends a _
               if (isFunctionCallExpression(node, '_push')) {
                 pushFunctionToTree(node)
