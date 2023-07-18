@@ -17,10 +17,11 @@ interface ServerOnlyComponentTransformPluginOptions {
     getComponents: () => Component[]
 }
 
-type AcornNode<N extends EstreeNode> = N & { start: number, end: number }
+type AcornNode<N extends EstreeNode = EstreeNode> = N & { start: number, end: number }
 
 enum NODE_TYPE {
   COMPONENT,
+  FRAGMENT,
   TEMPLATE,
   ELEMENT,
   SLOT,
@@ -29,6 +30,14 @@ enum NODE_TYPE {
   TEXT,
   // all invalid things
   NULL
+}
+
+type FRAGMENT_DECRIPTOR = {
+  type: NODE_TYPE.FRAGMENT,
+  // eslint-disable-next-line no-use-before-define
+  children: NODE_DESCRIPTOR[],
+  // eslint-disable-next-line no-use-before-define
+  parentDescriptor: NODE_DESCRIPTOR | null
 }
 
 type SLOT_DESCRIPTOR = {
@@ -92,7 +101,7 @@ type TEXT_DESCRIPTOR = {
   content: string
 }
 
-type NODE_DESCRIPTOR = TEMPLATE_DESCRIPTOR | SLOT_DESCRIPTOR | ELEMENT_DESCRIPTOR | COMMENT_DESCRIPTOR | INVALID_NODE | TEXT_DESCRIPTOR | COMPONENT_DESCRIPTOR
+type NODE_DESCRIPTOR = TEMPLATE_DESCRIPTOR | SLOT_DESCRIPTOR | ELEMENT_DESCRIPTOR | COMMENT_DESCRIPTOR | INVALID_NODE | TEXT_DESCRIPTOR | COMPONENT_DESCRIPTOR | FRAGMENT_DECRIPTOR
 
 const SCRIPT_RE = /<script[^>]*>/g
 
@@ -222,9 +231,8 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
         if (ssrRenderFunction) {
           let isLastNodeClosed = false
           let currentNode: NODE_DESCRIPTOR = {
-            type: NODE_TYPE.TEMPLATE,
-            children: [],
-            // @ts-expect-error initial node
+            type: NODE_TYPE.FRAGMENT,
+            children: [], 
             parentDescriptor: null
           }
           const tree = currentNode
@@ -308,13 +316,16 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
            * @param expression {SimpleCallExpression} `ssrRenderComponent` call expression
            */
           function componentToTree (expression: SimpleCallExpression) {
+            const [_, propsAst, childrenAst] = expression.arguments
             const descriptor: COMPONENT_DESCRIPTOR = {
               type: NODE_TYPE.COMPONENT,
               children: [],
-              props: code.slice(expression.arguments[1].start, expression.arguments[1].end)
+              props: code.slice((propsAst as AcornNode).start, (propsAst as AcornNode).end),
+              parentDescriptor: currentNode
             }
 
-            const childrenAst = expression.arguments[2]
+            currentNode = descriptor
+
             if (childrenAst.type === 'ObjectExpression') {
               for (const slotName in childrenAst.properties) {
                 // _withCtx((_, _push, _parent, _scopeId) => { push() })
@@ -377,7 +388,7 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
 
           estreeWalk(ast, {
             enter: (_node) => {
-              const node = _node as unknown as AcornNode<Node>
+              const node = _node as AcornNode<EstreeNode>
               // we only analyze sfc render function from vue compiler which prepends a _
               if (isFunctionCallExpression(node, '_push')) {
                 pushFunctionToTree(node)
