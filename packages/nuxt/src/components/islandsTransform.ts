@@ -3,18 +3,19 @@ import type { Component } from '@nuxt/schema'
 import { parseURL } from 'ufo'
 import { createUnplugin } from 'unplugin'
 import MagicString from 'magic-string'
-import type { ElementNode, Node as HtmlNode } from 'ultrahtml'
-import { COMMENT_NODE, ELEMENT_NODE, parse, walk } from 'ultrahtml'
+import type { DocumentNode, ElementNode, Node as HtmlNode } from 'ultrahtml'
+import { COMMENT_NODE, ELEMENT_NODE, parse as htmlParse, walk as htmlWalk, walkSync as htmlWalkSync } from 'ultrahtml'
 import { basename, extname } from 'pathe'
 import { pascalCase } from 'scule'
 
-import { walk as estreeWalk,  } from 'estree-walker'
+import { walk as estreeWalk } from 'estree-walker'
 import type Acorn from 'acorn'
-import type { ArrowFunctionExpression, CallExpression, Node as EstreeNode, Expression, FunctionDeclaration, Identifier, MemberExpression, Node, Program, Property, SimpleCallExpression, TemplateElement, TemplateLiteral } from 'estree'
+import type { ArrowFunctionExpression, CallExpression, Node as EstreeNode, Expression, FunctionDeclaration, Identifier, IfStatement, MemberExpression, Node, Program, Property, SimpleCallExpression, TemplateElement, TemplateLiteral } from 'estree'
+import type { WalkerContext } from 'estree-walker/types/sync'
 import { isVue } from '../core/utils'
 import { isFunctionCallExpression } from './utils'
 interface ServerOnlyComponentTransformPluginOptions {
-    getComponents: () => Component[]
+  getComponents: () => Component[]
 }
 
 type AcornNode<N extends EstreeNode = EstreeNode> = N & { start: number, end: number }
@@ -89,7 +90,7 @@ type COMMENT_DESCRIPTOR = {
 type COMPONENT_DESCRIPTOR = {
   type: NODE_TYPE.COMPONENT,
   // eslint-disable-next-line no-use-before-define
-  children : NODE_DESCRIPTOR[],
+  children: NODE_DESCRIPTOR[],
   // eslint-disable-next-line no-use-before-define
   parentDescriptor: NODE_DESCRIPTOR
   // will be reinjected into the code, unmodified
@@ -105,11 +106,23 @@ type NODE_DESCRIPTOR = TEMPLATE_DESCRIPTOR | SLOT_DESCRIPTOR | ELEMENT_DESCRIPTO
 
 const SCRIPT_RE = /<script[^>]*>/g
 
+const htmltags = [
+  'a',
+  'abbr',
+  'address',
+  'article',
+  'aside',
+  'audio',
+  'b',
+  
+
+]
+
 export const islandsTransform = createUnplugin((options: ServerOnlyComponentTransformPluginOptions) => {
   return {
     name: 'server-only-component-transform',
     enforce: 'pre',
-    transformInclude (id) {
+    transformInclude(id) {
       const components = options.getComponents()
       const islands = components.filter(component =>
         component.island || (component.mode === 'server' && !components.some(c => c.pascalName === component.pascalName && c.mode === 'client'))
@@ -117,7 +130,7 @@ export const islandsTransform = createUnplugin((options: ServerOnlyComponentTran
       const { pathname } = parseURL(decodeURIComponent(pathToFileURL(id).href))
       return islands.some(c => c.filePath === pathname)
     },
-    async transform (code, id) {
+    async transform(code, id) {
       if (!code.includes('<slot ')) { return }
       const template = code.match(/<template>([\s\S]*)<\/template>/)
       if (!template) { return }
@@ -180,11 +193,11 @@ export const islandsTransform = createUnplugin((options: ServerOnlyComponentTran
   }
 })
 
-function isBinding (attr: string): boolean {
+function isBinding(attr: string): boolean {
   return attr.startsWith(':')
 }
 
-function getBindings (bindings: Record<string, string>, vfor?: [string, string]): string {
+function getBindings(bindings: Record<string, string>, vfor?: [string, string]): string {
   if (Object.keys(bindings).length === 0) { return '' }
   const content = Object.entries(bindings).filter(b => b[0] !== '_bind').map(([name, value]) => isBinding(name) ? `${name.slice(1)}: ${value}` : `${name}: \`${value}\``).join(',')
   const data = bindings._bind ? `mergeProps(${bindings._bind}, { ${content} })` : `{ ${content} }`
@@ -212,7 +225,7 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
 
     enforce: 'post',
 
-    transformInclude (id) {
+    transformInclude(id) {
       const components = options.getComponents()
       const islands = components.filter(component =>
         component.island || (component.mode === 'server' && !components.some(c => c.pascalName === component.pascalName && c.mode === 'client'))
@@ -221,7 +234,7 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
       return islands.some(c => c.filePath === pathname)
     },
 
-    async transform (code, id) {
+    async transform(code, id) {
       debugger
       const ast = this.parse(code) as Acorn.Node & Program
       const s = new MagicString(code)
@@ -229,173 +242,129 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
 
       try {
         if (ssrRenderFunction) {
-          let isLastNodeClosed = false
-          let currentNode: NODE_DESCRIPTOR = {
-            type: NODE_TYPE.FRAGMENT,
-            children: [], 
-            parentDescriptor: null
-          }
-          const tree = currentNode
+          debugger
 
-          /**
-           * this function analyze the received string and can close a node
-           */
-          function htmlToTree (node: TemplateLiteral) {
-            // SimpleCallExpression is used because we don't expect a NewExpression
-            const templateComposition = [...node.expressions, ...node.quasis].sort((_a, _b) => {
-              const a = _a as AcornNode<Expression|TemplateElement>
-              const b = _b as AcornNode<Expression|TemplateElement>
-              return a.start - b.start
-            }) as Array<AcornNode<SimpleCallExpression>|AcornNode<TemplateElement>>
-            const part = templateComposition.map(node => node.type === 'CallExpression' ? `\${${code.slice(node.start, node.end)}}` : node.value.raw).join('')
+          const mainBuffer: string[] = []
 
-            // split the string between all tags
-            const splitted = part.matchAll(TAG_CONTENT_RE)
+          function handleIfElse(node: IfStatement): string[] {
+            const buffer = []
+            if (node.type === 'IfStatement') {
+              buffer.push(
+                `<v-if test="${getCodeSlice(code, node.test as AcornNode)}">`
+              )
 
-            if (part === '<!--[-->' || part === '<!--]-->') {
-              if (currentNode && 'children' in currentNode) {
-                currentNode.children.push({
-                  type: NODE_TYPE.COMMENT,
-                  content: part === '<!--]-->' ? ']' : '[',
-                  parentDescriptor: currentNode
-                })
-              }
-            }
-            debugger
-            console.log(splitted)
-            for (const part of splitted) {
-              const [full, tagContent, content] = part
-
-              if (!tagContent) { throw new Error('Parsing error: could not parse a tag from the content') }
-
-              const splitTagAndAttrs = tagContent.match(/([a-z|-]*)(.*)?/)
-
-              if (!splitTagAndAttrs) { throw new Error('Parsing error: could not parse a tag from its attributes') }
-              const [_fullTagContent, tagName, attrs] = splitTagAndAttrs
-              const isClosingTag = full.startsWith('</')
-
-              if (isClosingTag) {
-                if (isLastNodeClosed) {
-                  currentNode = (currentNode as ELEMENT_DESCRIPTOR).parentDescriptor
-                }
-                isLastNodeClosed = true
-              } else {
-                const isNewChildrenNode = !isLastNodeClosed
-                isLastNodeClosed = false
-                if (!currentNode || !('children' in currentNode)) { throw new Error('Parsing error: could not parse a tag from its parent') }
-
-                const descriptor: NODE_DESCRIPTOR = {
-                  type: NODE_TYPE.ELEMENT,
-                  name: tagName,
-                  attrs,
-                  children: [],
-                  parentDescriptor: isNewChildrenNode ? currentNode : currentNode.parentDescriptor
-                }
-
-                if (isNewChildrenNode) {
-                  currentNode.children.push(descriptor)
-                  if (content) {
-                    currentNode.children.push({
-                      type: NODE_TYPE.TEXT,
-                      content
-                    })
+              estreeWalk(node, {
+                enter(node) {
+                  if (node.type === 'CallExpression') {
+                    buffer.push(...handlePushFunction(node as SimpleCallExpression))
+                    this.skip()
+                  } else if (node.type === 'IfStatement') {
+                    buffer.push(...handleIfElse(node as IfStatement))
+                    this.skip()
                   }
-                } else if (content) {
-                  currentNode.parentDescriptor.children.push({
-                    type: NODE_TYPE.TEXT,
-                    content
-                  })
                 }
-              }
+              })
+
+              buffer.push(
+                '</v-if>'
+              )
             }
+
+            return buffer
           }
 
-          /**
-           * ssrComponent to tree
-           *
-           * @param expression {SimpleCallExpression} `ssrRenderComponent` call expression
-           */
-          function componentToTree (expression: SimpleCallExpression) {
-            const [_, propsAst, childrenAst] = expression.arguments
-            const descriptor: COMPONENT_DESCRIPTOR = {
-              type: NODE_TYPE.COMPONENT,
-              children: [],
-              props: code.slice((propsAst as AcornNode).start, (propsAst as AcornNode).end),
-              parentDescriptor: currentNode
-            }
+          function handlePushFunction(node: SimpleCallExpression): string[] {
+            const buffer: string[] = []
+            if (node.type === 'CallExpression' && (node.callee as Identifier).name === '_push') {
+              const [toPush] = node.arguments
+              if (toPush.type === 'TemplateLiteral') {
+                // SimpleCallExpression is used because we don't expect a NewExpression
+                const templateComposition = [...toPush.expressions, ...toPush.quasis].sort((_a, _b) => {
+                  const a = _a as AcornNode
+                  const b = _b as AcornNode
+                  return a.start - b.start
+                })
+                const part = templateComposition.map((_node) => {
+                  const node = _node as AcornNode
 
-            currentNode = descriptor
+                  return node.type === 'CallExpression' ? `\${${getCodeSlice(code, node)}}` : node.value.raw
+                }).join('')
 
-            if (childrenAst.type === 'ObjectExpression') {
-              for (const slotName in childrenAst.properties) {
-                // _withCtx((_, _push, _parent, _scopeId) => { push() })
-                const slotAst = childrenAst.properties[slotName] as Property
+                buffer.push(part)
+              } else if (toPush.type === 'CallExpression') {
+                // SimpleExpression we don't expect any new expression in a push function
+                const expression = toPush as AcornNode<SimpleCallExpression>
 
-                if (slotAst.value.type === 'CallExpression') {
-                  const slotFnAst = slotAst.value.arguments[0] as ArrowFunctionExpression
-                  componentChildrenToTree(slotName, slotFnAst)
-                } else if ((slotAst.value.type === 'ArrowFunctionExpression')) {
-                  componentChildrenToTree(slotName, slotAst.value)
-                }
+                buffer.push(`\${${getCodeSlice(code, expression)}}`)
               }
             }
+            return buffer
           }
 
-          function componentChildrenToTree (slotName: string, fnAst: ArrowFunctionExpression | FunctionDeclaration) {
-            if (currentNode.type !== NODE_TYPE.COMPONENT) {
-              throw new Error('Somehting went wrong when converting a component into a tree')
+          function handleSsrRenderList(node: SimpleCallExpression): string[] {
+            if (node.callee.type !== 'Identifier' || node.callee.name !== '_ssrRenderList') {
+              throw new Error('handleSsrRenderList cannot transform non _ssrRenderList calls')
             }
+            const buffer: string[] = []
+            const [leftArg, _callback] = node.arguments as AcornNode[]
+            // parse left right as in `for (const test in tests) {...}`
+            const callback = _callback as ArrowFunctionExpression
 
-            const slotDescriptor: SLOT_DESCRIPTOR = {
-              type: NODE_TYPE.SLOT,
-              children: [],
-              name: slotName,
-              parentDescriptor: currentNode
-            }
+            buffer.push(`<v-for left="${getCodeSlice(code, leftArg)}" right="${getCodeSlice(code, callback.params[0] as AcornNode)}">`)
 
-            currentNode.children.push(slotDescriptor)
-
-            currentNode = slotDescriptor
-
-            estreeWalk(fnAst.body, {
-              enter: (_node) => {
-                const node = _node as unknown as AcornNode<Node>
-                // we only analyze sfc render function from vue compiler which prepends a _
-                if (isFunctionCallExpression(node, '_push')) {
-                  pushFunctionToTree(node as SimpleCallExpression)
+            estreeWalk(callback.body, {
+              enter(node) {
+                if (node.type === 'CallExpression') {
+                  if (node.callee.type === 'Identifier') {
+                    if (node.callee.name === '_push') {
+                      buffer.push(...handlePushFunction(node as SimpleCallExpression))
+                      this.skip()
+                    } else if (node.callee.name === '_ssrRenderList') {
+                      buffer.push(...handleSsrRenderList(node as SimpleCallExpression))
+                      this.skip()
+                    }
+                  }
+                } else if (node.type === 'IfStatement') {
+                  buffer.push(...handleIfElse(node as IfStatement))
+                  this.skip()
                 }
               }
             })
 
-            currentNode = slotDescriptor.parentDescriptor
+            buffer.push('</v-for>')
+            return buffer
           }
 
-          /**
-           * analyze a push function
-           */
-          function pushFunctionToTree (node: SimpleCallExpression) {
-            // push only have a single argument
-            const arg = node.arguments[0]
-
-            // -> `<div>${_ssrRender()}</div>`
-            if (arg.type === 'TemplateLiteral') {
-              htmlToTree(arg)
-            } else if (arg.type === 'CallExpression') {
-              // never seen a NewExpression
-              componentToTree(node as SimpleCallExpression)
-            }
-          }
-
+          // reconstruct an html compatible string to be walked by ultrahtml
           estreeWalk(ast, {
-            enter: (_node) => {
-              const node = _node as AcornNode<EstreeNode>
-              // we only analyze sfc render function from vue compiler which prepends a _
-              if (isFunctionCallExpression(node, '_push')) {
-                pushFunctionToTree(node)
+            enter(node) {
+              if (node.type === 'CallExpression') {
+                if (node.callee.type === 'Identifier') {
+                  if (node.callee.name === '_push') {
+                    mainBuffer.push(...handlePushFunction(node as SimpleCallExpression))
+                    this.skip()
+                  } else if (node.callee.name === '_ssrRenderList') {
+                    mainBuffer.push(...handleSsrRenderList(node as SimpleCallExpression))
+                    this.skip()
+                  }
+                }
+              } else if (node.type === 'IfStatement') {
+                mainBuffer.push(...handleIfElse(node as IfStatement))
+                this.skip()
               }
             }
           })
-          console.log(tree, id)
+          console.log(mainBuffer, id)
+          const html = mainBuffer.join('').replaceAll(/<(?!\/)([a-z]*)([^>]*)>/g, (_full, tag, content) => {
+            // add space to <div${_ssrRenderAttrs(_attrs)}>
+            return `<${tag} ${content}>`
+          })
+
+          const htmlAst = htmlParse(html) as DocumentNode
+
+
+
+          console.log(htmlAst)
           debugger
         }
       } catch (e) {
@@ -405,3 +374,33 @@ export const serverComponentTransform = createUnplugin((options: { chunks: Set<s
     }
   }
 })
+
+function getCodeSlice(str: string, node: AcornNode) {
+  return str.slice(node.start, node.end)
+}
+
+/**
+ * all items of the buffer are rendered with a `_push` fn
+ */
+function htmlAstToRenderFunction(ast: DocumentNode) {
+  const buffer = []
+  const children = (ast.children ?? []) as HtmlNode[]
+
+  for (const child of children) {
+    switch (child.type) {
+      case ELEMENT_NODE:
+        buffer.push(...elementNodeToRender(child))
+        break
+    }
+  }
+
+  return buffer
+}
+
+function elementNodeToRender(ast: ElementNode): string[] {
+  const buffer: string[] = []
+
+  if()
+
+  return buffer
+}
