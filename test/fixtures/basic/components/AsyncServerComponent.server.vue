@@ -6,6 +6,10 @@
       {{ count }}
     </div>
 
+    link!!!!!!!!!!!!!!!!!!
+    <NuxtLink to="/" nuxt-client>
+    to home </NuxtLink>
+
     <Counter :multiplier="1" />
     <slot />
   </div>

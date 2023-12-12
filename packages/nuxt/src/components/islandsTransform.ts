@@ -108,10 +108,32 @@ export const islandsTransform = createUnplugin((options: ServerOnlyComponentTran
             const attributeValue = node.attributes[':nuxt-client'] || node.attributes['nuxt-client'] || 'true'
             if (isVite) {
               // handle granular interactivity
-              const htmlCode = code.slice(startingIndex + node.loc[0].start, startingIndex + node.loc[1].end)
+              // const htmlCode = code.slice(startingIndex + node.loc[0].start, startingIndex + node.loc[1].end)
               const uid = hash(id + node.loc[0].start + node.loc[0].end)
+              let children = ''
 
-              s.overwrite(startingIndex + node.loc[0].start, startingIndex + node.loc[1].end, `<NuxtTeleportSsrClient to="${node.name}-${uid}" ${rootDir && isDev ? `root-dir="${rootDir}"` : ''} :nuxt-client="${attributeValue}">${htmlCode.replaceAll(NUXTCLIENT_ATTR_RE, '')}</NuxtTeleportSsrClient>`)
+              if (node.children.length > 0) {
+                // handle <template>
+                const templates = node.children.filter((c) => c.name === 'template')
+                for(const template  of templates) {
+                  for(const [attr, value] of Object.entries(template.attributes)) {
+
+                    if(attr.startsWith('#')) {
+                      const slotName = attr.slice(1)
+                      const slotHash = hash(uid+slotName)
+                      children+= `<template #${slotName}="${value || ''}">
+                      <div id="${node.name}-${uid}-${slotHash}" style="display: contents;">
+                        <Teleport to="${slotHash}">
+                          ${template.slice(startingIndex + template.loca)}
+                        </Teleport>
+                      </div>
+                      </template>`
+                    } else if(attr === 'v-slot') {}
+                  }
+                }
+              }
+
+              s.overwrite(startingIndex + node.loc[0].start, startingIndex + node.loc[1].end, `<NuxtTeleportSsrClient to="${node.name}-${uid}" ${rootDir && isDev ? `root-dir="${rootDir}"` : ''} :nuxt-client="${attributeValue}">${children}</NuxtTeleportSsrClient>`)
             }
           }
         }
